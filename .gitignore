@@ -5,6 +5,11 @@
 # gitignore template for Jupyter Notebooks
 # website: http://jupyter.org/
 
+# Only including ipynb and py files for now, can add more file types in later
+*
+!*.ipynb
+!*.py
+
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
 
