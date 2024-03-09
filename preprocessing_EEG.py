@@ -6,6 +6,10 @@ import sys
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
+#Set global variables
+READ_BASEPATH = '/scratch/eecs545w24_class_root/eecs545w24_class/shared_data/hms_data/raw_data/' # set read basepath
+SAVE_BASEPATH = '/scratch/eecs545w24_class_root/eecs545w24_class/shared_data/hms_data/' # set save basepath
+
 def read_data():
     """
     Reads the training data from a CSV file and adds a column for the path to the corresponding EEG data.
@@ -13,8 +17,8 @@ def read_data():
     Returns:
         DataFrame: The training data with an added column for the EEG data path.
     """
-    train_df = pd.read_csv(f'train.csv')
-    train_df['eeg_path'] = f'train_eegs/'+train_df['eeg_id'].astype(str)+'.parquet'
+    train_df = pd.read_csv(READ_BASEPATH+'train.csv')
+    train_df['eeg_path'] = READ_BASEPATH+'train_eegs/'+train_df['eeg_id'].astype(str)+'.parquet'
     return train_df
 
 def read_parquet_helper(i):
@@ -27,7 +31,7 @@ def read_parquet_helper(i):
     Returns:
         tuple: The ID and the EEG data as a DataFrame.
     """
-    fn = f'train_eegs/'+i.astype(str)+'.parquet'
+    fn = READ_BASEPATH+'train_eegs/'+i.astype(str)+'.parquet'
     return i, pd.read_parquet(fn)
 
 def get_eeg_data_slice(i, train_df, train_eegs):
@@ -99,7 +103,7 @@ def save_eeg_data(eeg_filt):
     Args:
         eeg_filt (list): The preprocessed EEG data.
     """
-    new_dir = 'train_eegs_processed/'
+    new_dir = SAVE_BASEPATH+'train_eegs_processed/'
     if not os.path.exists(new_dir):
         os.makedirs(new_dir)
 
