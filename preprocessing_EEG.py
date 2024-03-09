@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import mne
 import os
+import traceback
 import sys
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
@@ -153,7 +154,9 @@ def main():
             i = futures[future]
             try:
                 eeg_filt.append(future.result())
-            except Exception:
+            except Exception as e:
+                print(f"Processing failed for training window entry {i}")
+                print(traceback.format_exc())
                 eeg_filt.append(train_final_data[i])
                 exception_indices.append(i)
 
