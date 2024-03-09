@@ -1,90 +1,159 @@
-# %%
 import pandas as pd
+import numpy as np
 import mne
+import os
+import sys
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
-# %% [markdown]
-# ## Reading training and testing csv and parquet files
-train_df = pd.read_csv(f'train.csv')
-test_df = pd.read_csv(f'test.csv')
+def read_data():
+    """
+    Reads the training data from a CSV file and adds a column for the path to the corresponding EEG data.
 
+    Returns:
+        DataFrame: The training data with an added column for the EEG data path.
+    """
+    train_df = pd.read_csv(f'train.csv')
+    train_df['eeg_path'] = f'train_eegs/'+train_df['eeg_id'].astype(str)+'.parquet'
+    return train_df
 
-## Parquet File Names
-train_df['eeg_path'] = f'train_eegs/'+train_df['eeg_id'].astype(str)+'.parquet'
-train_df['spec_path'] = f'train_spectrograms/'+train_df['spectrogram_id'].astype(str)+'.parquet'
+def read_parquet_helper(i):
+    """
+    Reads the EEG data for a given ID from a Parquet file.
 
-test_df['eeg_path'] = f'test_eegs/'+test_df['eeg_id'].astype(str)+'.parquet'
-test_df['spec_path'] = f'test_spectrograms/'+test_df['spectrogram_id'].astype(str)+'.parquet'
+    Args:
+        i (int): The ID of the EEG data to read.
 
-
-# ## Adding corresponding 50s eeg and 10min spectogram to each row of training dataframe
-unique_eeg_ids = train_df['eeg_id'].unique()
-unique_spec_ids = train_df['spectrogram_id'].unique()
-
-# reading all eegs
-train_eegs = dict()
-train_df['eeg'] = ""
-
-for i in unique_eeg_ids:
+    Returns:
+        tuple: The ID and the EEG data as a DataFrame.
+    """
     fn = f'train_eegs/'+i.astype(str)+'.parquet'
-    train_eegs[i] = pd.read_parquet(fn)
+    return i, pd.read_parquet(fn)
 
-eeg_channel_names = train_eegs[train_df['eeg_id'][0]].columns
+def get_eeg_data_slice(i, train_df, train_eegs):
+    """
+    Gets a slice of the EEG data for a given index.
 
+    Args:
+        i (int): The index of the EEG data to get.
+        train_df (DataFrame): The training data.
+        train_eegs (dict): The EEG data.
 
-# %% getting 50s eeg data for each row
-for i in range(len(train_df)):
+    Returns:
+        ndarray: The slice of the EEG data.
+    """
     start = (train_df['eeg_label_offset_seconds'][i]*200).astype(int)
     end = start + 200*50
-    train_df['eeg'][i] = train_eegs[train_df['eeg_id'][i]].iloc[start:end].to_numpy()
+    return train_eegs[train_df['eeg_id'][i]].iloc[start:end].to_numpy()
 
-train_final_data = train_df.drop(['eeg_id', 'eeg_sub_id', 'eeg_label_offset_seconds', 'spectrogram_id', 'spectrogram_sub_id', 'spectrogram_label_offset_seconds', 'label_id', 'patient_id', 'eeg_path', 'spec_path'], axis = 1)
+def preprocess_eeg_data_slice(eeg_data, info):
+    """
+    Preprocesses a slice of the EEG data.
 
-#%% Preprocessing 
+    Args:
+        eeg_data (ndarray): The slice of the EEG data to preprocess.
+        info (Info): The MNE Info object containing the EEG channel names.
 
+    Returns:
+        ndarray: The preprocessed EEG data.
+    """
+    # Assign the input EEG data to Xnp
+    Xnp = eeg_data
 
-## EEG Info for Preprocessing
-
-x = ['eeg']*19
-x.append('ecg')
-
-info = mne.create_info(ch_names=eeg_channel_names.tolist(), sfreq=200,
-                                        ch_types=x,
-                                        verbose=False)
-
-#%%
-train_final_data['eeg_filt'] = ""
-
-# %%
-
-for i in range(2): #range(len(train_final_data['eeg']))
-    Xnp = train_final_data['eeg'][i]
-
+    # Create a RawArray object from the EEG data
     raw = mne.io.RawArray(data=Xnp.T, info=info, verbose=False)
-    raw.set_montage('standard_1005', on_missing='warn')
+    # Set the montage to 'standard_1005'
+    raw.set_montage('standard_1005', on_missing='ignore')
 
-    # Low-pass and High-pass Filters
+    # Filter the raw data to keep frequencies between 0.5 and 80 Hz
     raw_filt = raw.copy().filter(0.5,80,verbose=False)
 
-    ## TODO: Check this (not doing anything)
-    ssp_projectors = raw_filt.info["projs"]
+    # Delete projection items from the filtered data
     raw_filt.del_proj()
 
-    # ECG Summary Plot
-    ecg_epochs = mne.preprocessing.create_ecg_epochs(raw_filt)
-
-    # ICA
-    ica = mne.preprocessing.ICA(n_components=10, random_state=97); #change n_components
+    # Initialize an ICA object with 10 components and a random state of 97
+    ica = mne.preprocessing.ICA(n_components=10, random_state=97, verbose=40)
+    # Fit the ICA to the filtered data
     ica.fit(raw_filt)
 
-    # For ECG artifacts
-    ecg_indices, ecg_scores = ica.find_bads_ecg(raw_filt); #, ecg_events=ecg_events)
+    # Find ECG artifacts in the filtered data
+    ecg_indices, ecg_scores = ica.find_bads_ecg(raw_filt)
+    # Exclude the ECG artifacts from the ICA
     ica.exclude.extend(ecg_indices)
 
+    # Apply the ICA to the filtered data
     raw_ica = ica.apply(raw_filt)
 
-    # Notch Filters
+    # Apply a notch filter at 50 Hz and 60 Hz to the ICA data
     raw_final_filt = raw_ica.notch_filter(freqs=50, filter_length='auto', phase='zero')
     raw_final_filt = raw_final_filt.notch_filter(freqs=60, filter_length='auto', phase='zero')
 
-    # saving the preprocessed eeg data
-    train_final_data['eeg_filt'][i] = raw_final_filt.get_data()
+    # Return the preprocessed EEG data
+    return raw_final_filt.get_data().T
+
+
+def save_eeg_data(eeg_filt):
+    """
+    Saves the preprocessed EEG data to disk.
+
+    Args:
+        eeg_filt (list): The preprocessed EEG data.
+    """
+    new_dir = 'train_eegs_processed/'
+    if not os.path.exists(new_dir):
+        os.makedirs(new_dir)
+
+    for i in range(0, len(eeg_filt), 100):
+        chunk = eeg_filt[i:i+100]
+        np.savez_compressed(new_dir + f'eeg_filt_{i//100}.npz', chunk)
+
+def main():
+    f = open('output.log', 'w')
+    sys.stdout = f
+    sys.stderr = f
+    mne.set_log_level('ERROR')
+
+    #Reading metadata
+    train_df = read_data()
+
+    #Reading EEG parquets
+    unique_eeg_ids = train_df['eeg_id'].unique()
+    train_eegs = dict()
+    train_df['eeg'] = ""
+    print("Reading EEG data")
+    with ThreadPoolExecutor() as executor:
+            for i, data in executor.map(read_parquet_helper, unique_eeg_ids):
+                train_eegs[i] = data
+
+    #Splitting EEG data
+    eeg_channel_names = train_eegs[train_df['eeg_id'][0]].columns
+    train_df['eeg'] = ""
+    print("Spliting EEG data")
+    with ThreadPoolExecutor() as executor:
+        train_df['eeg'] = list(executor.map(get_eeg_data_slice, range(len(train_df)), [train_df]*len(train_df), [train_eegs]*len(train_df)))
+    train_final_data = train_df['eeg']
+    del train_eegs, train_df
+
+    #Preprocessing EEG data
+    x = ['eeg']*19
+    x.append('ecg')
+    info = mne.create_info(ch_names=eeg_channel_names.tolist(), sfreq=200,
+                                        ch_types=x,
+                                        verbose=False)
+    eeg_filt = []
+    exception_indices = []
+    with ProcessPoolExecutor() as executor:
+        futures = {executor.submit(preprocess_eeg_data_slice, train_final_data[i], info): i for i in range(len(train_final_data))}
+        for future in concurrent.futures.as_completed(futures):
+            i = futures[future]
+            try:
+                eeg_filt.append(future.result())
+            except Exception:
+                eeg_filt.append(train_final_data[i])
+                exception_indices.append(i)
+
+    print(f"Processing failed for training window entries:\n{exception_indices}")
+    save_eeg_data(eeg_filt)
+
+if __name__ == "__main__":
+    main()
