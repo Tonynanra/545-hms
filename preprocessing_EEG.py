@@ -103,6 +103,7 @@ def save_eeg_data(eeg_filt):
     if not os.path.exists(new_dir):
         os.makedirs(new_dir)
 
+    #EEG data is saved in chunks of 100 windows
     for i in range(0, len(eeg_filt), 100):
         chunk = eeg_filt[i:i+100]
         np.savez_compressed(new_dir + f'eeg_filt_{i//100}.npz', chunk)
