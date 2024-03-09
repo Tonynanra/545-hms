@@ -2,6 +2,8 @@
 
 # code setup user TODOs
 - pip install mne
+- pip install fastparquet
+- pip install pyarrow
 
 # Files
 -preprocessing_EEG.ipynb

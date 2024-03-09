@@ -9,6 +9,7 @@
 *
 !*.ipynb
 !*.py
+!*.sh
 
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
