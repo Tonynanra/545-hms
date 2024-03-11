@@ -11,6 +11,15 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 READ_BASEPATH = '/scratch/eecs545w24_class_root/eecs545w24_class/shared_data/hms_data/raw_data/' # set read basepath
 SAVE_BASEPATH = '/scratch/eecs545w24_class_root/eecs545w24_class/shared_data/hms_data/' # set save basepath
 
+SAVE_DIR = SAVE_BASEPATH+'train_eegs_processed/'
+if not os.path.exists(SAVE_DIR):
+    os.makedirs(SAVE_DIR)
+
+## set these params if need to resume preprocessing
+# calculate by mult last saved npy chunk_num by 100, then subtract 100
+# ie. eeg_filt_0087.npy => 87 * 100 = 8700 - 100 => start at 8600
+START_IND = 0
+
 def read_data():
     """
     Reads the training data from a CSV file and adds a column for the path to the corresponding EEG data.
@@ -18,7 +27,8 @@ def read_data():
     Returns:
         DataFrame: The training data with an added column for the EEG data path.
     """
-    train_df = pd.read_csv(READ_BASEPATH+'train.csv')
+    train_df = pd.read_csv(READ_BASEPATH+'train.csv')[START_IND:] # index starts at START_IND
+    train_df = train_df.reset_index(drop=True) # reset the index to start from 0
     train_df['eeg_path'] = READ_BASEPATH+'train_eegs/'+train_df['eeg_id'].astype(str)+'.parquet'
     return train_df
 
@@ -114,9 +124,9 @@ def save_eeg_data(eeg_filt):
         np.save(new_dir + f'eeg_filt_{i//100}', chunk)
 
 def main():
-    f = open('output.log', 'w')
-    sys.stdout = f
-    sys.stderr = f
+    # f = open('output.log', 'w')
+    # sys.stdout = f
+    # sys.stderr = f
     mne.set_log_level('ERROR')
 
     #Reading metadata
@@ -132,7 +142,7 @@ def main():
                 train_eegs[i] = data
 
     #Splitting EEG data
-    eeg_channel_names = train_eegs[train_df['eeg_id'][0]].columns
+    eeg_channel_names = train_eegs[train_df['eeg_id'][0]].columns # needs to be relative to starting point
     train_df['eeg'] = ""
     print("Spliting EEG data")
     with ThreadPoolExecutor() as executor:
@@ -148,20 +158,41 @@ def main():
                                         verbose=False)
     eeg_filt = []
     exception_indices = []
-    with ProcessPoolExecutor() as executor:
-        futures = {executor.submit(preprocess_eeg_data_slice, train_final_data[i], info): i for i in range(len(train_final_data))}
-        for future in concurrent.futures.as_completed(futures):
-            i = futures[future]
-            try:
-                eeg_filt.append(future.result())
-            except Exception as e:
-                print(f"Processing failed for training window entry {i}")
-                print(traceback.format_exc())
-                eeg_filt.append(train_final_data[i])
-                exception_indices.append(i)
+    chunk_size = 100 # defines how often to save
+
+    chunk_num = int(START_IND / 100) + 1 # used for saving
+    
+    # with ProcessPoolExecutor() as executor:
+    #     futures = {executor.submit(preprocess_eeg_data_slice, train_final_data[i], info): i for i in range(0, len(train_final_data))}
+    #     for future in concurrent.futures.as_completed(futures):
+    #         i = futures[future]
+
+    for i in range(len(train_final_data)):
+        try:
+            eeg_filt.append(preprocess_eeg_data_slice(train_final_data[i], info))
+        except Exception as e:
+            print(f"Processing failed for training window entry {i}")
+            # print(traceback.format_exc())
+            eeg_filt.append(train_final_data[i])
+            exception_indices.append(i)
+        
+        # Save eeg_filt every 100 samples
+        if (i + 1) % chunk_size == 0:
+            # chunk_num = (i + 1) // chunk_size
+            chunk_num_str = f"{chunk_num:04d}"
+            # Save the NumPy array to a file
+            np.save(f'{SAVE_DIR}eeg_filt_{chunk_num_str}.npy', np.array(eeg_filt))
+            print(f'#### row {i} // eeg_filt_{chunk_num_str}.npy successfully saved ####')
+            eeg_filt = []  # Reset eeg_filt for the next chunk
+            chunk_num += 1
+
+    # Save the remaining eeg_filt (if any) after the last chunk
+    if eeg_filt:
+        chunk_num_str = f"{chunk_num:04d}"
+        np.save(f'{SAVE_DIR}eeg_filt_{chunk_num_str}.npy', np.array(eeg_filt))
 
     print(f"Processing failed for training window entries:\n{exception_indices}")
-    save_eeg_data(eeg_filt)
+    
 
 if __name__ == "__main__":
     main()
