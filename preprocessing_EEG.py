@@ -20,9 +20,9 @@ if not os.path.exists(SAVE_DIR):
 # ie. eeg_filt_0087.npy => 87 * 100 = 8700 - 100 => start at 8600
 START_IND = 0
 
-def read_data():
+def read_metadata():
     """
-    Reads the training data from a CSV file and adds a column for the path to the corresponding EEG data.
+    Reads the training metadata from a CSV file and adds a column for the path to the corresponding EEG data.
 
     Returns:
         DataFrame: The training data with an added column for the EEG data path.
@@ -130,7 +130,7 @@ def main():
     mne.set_log_level('ERROR')
 
     #Reading metadata
-    train_df = read_data()
+    train_df = read_metadata()
 
     #Reading EEG parquets
     unique_eeg_ids = train_df['eeg_id'].unique()
