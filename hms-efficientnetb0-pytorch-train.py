@@ -52,7 +52,7 @@
 # 
 # In this competition, EEG waveforms are 50 seconds long.
 # 
-# ### <b><span style='color:#F1A424'>What is a spectogram?</span></b>
+# ### <b><span style='color:#F1A424'>What is a spectrogram?</span></b>
 # 
 # A spectrogram is a visual representation of the spectrum of frequencies in a signal as they vary with time. It is a three-dimensional plot that displays how the frequencies of a signal change over time. Spectrograms are commonly used in signal processing, audio analysis, and other fields to analyze the frequency content of a signal and how it evolves over time.
 # 
@@ -95,6 +95,8 @@ from tqdm import tqdm
 from typing import Dict, List
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print('Using', torch.cuda.device_count(), 'GPU(s)')
@@ -105,11 +107,11 @@ print('Using', torch.cuda.device_count(), 'GPU(s)')
 # ***
 
 # %%
-class config_debug:
+class config_base:
     AMP = True
     BATCH_SIZE_TRAIN = 32
     BATCH_SIZE_VALID = 32
-    EPOCHS = 4
+    EPOCHS = 5
     FOLDS = 5
     FREEZE = False
     GRADIENT_ACCUMULATION_STEPS = 1
@@ -118,38 +120,22 @@ class config_debug:
     NUM_FROZEN_LAYERS = 39
     USE_CUSTOM_SPECS = True
     USE_PHASE_SPECS = True
-    OVERLAPPING_SPECS = False
-    NUM_WORKERS = 0
     PRINT_FREQ = 20
-    SEED = 545
+    SEED = int.from_bytes(os.urandom(4), byteorder='big', signed=False)
     TRAIN_FULL_DATA = False
-    K_FOLD_EXIST = True
-    TRAIN_SHUFFLE = False
-    VISUALIZE = True
+    K_FOLD_EXISTS = False
     WEIGHT_DECAY = 0.01
 
-class config_train:
-    AMP = True
-    BATCH_SIZE_TRAIN = 32
-    BATCH_SIZE_VALID = 32
-    EPOCHS = 5
-    FOLDS = 5
-    FREEZE = False
-    GRADIENT_ACCUMULATION_STEPS = 4
-    MAX_GRAD_NORM = 1e7
-    MODEL = "tf_efficientnet_b0"
-    NUM_FROZEN_LAYERS = 39
-    USE_CUSTOM_SPECS = True
-    USE_PHASE_SPECS = True
-    OVERLAPPING_SPECS = False
+
+class config_debug(config_base):
+    NUM_WORKERS = 0
+    TRAIN_SHUFFLE = False
+    VISUALIZE = True
+
+class config_train(config_base):
     NUM_WORKERS = mp.cpu_count()
-    PRINT_FREQ = 20
-    SEED = 545
-    TRAIN_FULL_DATA = False
-    K_FOLD_EXISTS = True
     TRAIN_SHUFFLE = True
     VISUALIZE = False
-    WEIGHT_DECAY = 0.01
 
 class config(config_train): pass
 
@@ -158,10 +144,10 @@ class paths:
     RAW_DATAPATH = DATAPATH
     OUTPUT_DIR = DATAPATH + 'train/'
     PRE_LOADED_EEGS = '/kaggle/input/brain-eeg-spectrograms/eeg_specs.npy'
-    PRE_LOADED_SPECTOGRAMS = '/kaggle/input/brain-spectrograms/specs.npy'
+    PRE_LOADED_SPECTROGRAMS = '/kaggle/input/brain-spectrograms/specs.npy'
     TRAIN_CSV = RAW_DATAPATH + "train.csv"
     TRAIN_EEGS = "/kaggle/input/brain-eeg-spectrograms/EEG_Spectrograms/"
-    TRAIN_SPECTOGRAMS = RAW_DATAPATH + "train_spectrograms/"
+    TRAIN_SPECTROGRAMS = RAW_DATAPATH + "train_spectrograms/"
     
 
 # %% [markdown]
@@ -221,8 +207,8 @@ def get_logger(filename=paths.OUTPUT_DIR):
 def plot_spectrogram(spectrogram_path: str):
     """
     Source: https://www.kaggle.com/code/mvvppp/hms-eda-and-domain-journey
-    Visualize spectogram recordings from a parquet file.
-    :param spectrogram_path: path to the spectogram parquet.
+    Visualize spectrogram recordings from a parquet file.
+    :param spectrogram_path: path to the spectrogram parquet.
     """
     sample_spect = pd.read_parquet(spectrogram_path)
     
@@ -258,7 +244,8 @@ def seed_everything(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed) 
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    LOGGER.info(f"Random seed: {seed}") 
 
     
 def sep():
@@ -283,6 +270,7 @@ seed_everything(config.SEED)
 df = pd.read_csv(paths.TRAIN_CSV)
 df.insert(0, 'index', range(len(df)))
 label_cols = df.columns[-6:]
+eeg_hash = {eeg_id: index for index, eeg_id in enumerate(df['eeg_id'].unique())}
 print(f"Train cataframe shape is: {df.shape}")
 print(f"Labels: {list(label_cols)}")
 if config.VISUALIZE:
@@ -300,45 +288,35 @@ if config.VISUALIZE:
 # [1]: https://www.kaggle.com/competitions/hms-harmful-brain-activity-classification/discussion/467021
 
 # %%
-if config.OVERLAPPING_SPECS:
-    train_df = df.groupby('eeg_id')[['spectrogram_id','spectrogram_label_offset_seconds']].agg({
-        'spectrogram_id':'first',
-        'spectrogram_label_offset_seconds':'min'
-    })
-    train_df.columns = ['spectogram_id','min']
+train_df = df.groupby('eeg_id')[['spectrogram_id','spectrogram_label_offset_seconds']].agg({
+    'spectrogram_id':'first',
+    'spectrogram_label_offset_seconds':'min'
+})
+train_df.columns = ['spectrogram_id','min']
 
-    aux = df.groupby('eeg_id')[['spectrogram_id','spectrogram_label_offset_seconds']].agg({
-        'spectrogram_label_offset_seconds':'max'
-    })
-    train_df['max'] = aux
+aux = df.groupby('eeg_id')[['spectrogram_id','spectrogram_label_offset_seconds']].agg({
+    'spectrogram_label_offset_seconds':'max'
+})
+train_df['max'] = aux
 
-    aux = df.groupby('eeg_id')[['patient_id']].agg('first')
-    train_df['patient_id'] = aux
+aux = df.groupby('eeg_id')[['patient_id']].agg('first')
+train_df['patient_id'] = aux
 
-    aux = df.groupby('eeg_id')[label_cols].agg('sum')
-    for label in label_cols:
-        train_df[label] = aux[label].values
-        
-    y_data = train_df[label_cols].values
-    y_data = y_data / y_data.sum(axis=1,keepdims=True)
-    train_df[label_cols] = y_data
+aux = df.groupby('eeg_id')[label_cols].agg('sum')
+for label in label_cols:
+    train_df[label] = aux[label].values
+    
+y_data = train_df[label_cols].values
+y_data = y_data / y_data.sum(axis=1,keepdims=True)
+train_df[label_cols] = y_data
 
-    aux = df.groupby('eeg_id')[['expert_consensus']].agg('first')
-    train_df['target'] = aux
+aux = df.groupby('eeg_id')[['expert_consensus']].agg('first')
+train_df['target'] = aux
 
-    train_df = train_df.reset_index()
-    print('Train non-overlapp eeg_id shape:', train_df.shape )
-    if config.VISUALIZE:
-        train_df.head()
-
-else:
-    train_df = df
-    train_df.rename(columns={'expert_consensus':'target'}, inplace=True)
-    y_data = train_df[label_cols].values
-    y_data = y_data / y_data.sum(axis=1,keepdims=True)
-    train_df[label_cols] = y_data
-    if config.VISUALIZE:
-        train_df
+train_df = train_df.reset_index()
+print('Train non-overlapp eeg_id shape:', train_df.shape )
+if config.VISUALIZE:
+    train_df.head()
 
 # %% [markdown]
 # ### <b><span style='color:#F1A424'>Read Train Spectrograms</span></b>
@@ -346,17 +324,17 @@ else:
 # 
 # First we need to read in all 11k train spectrogram files. Reading thousands of files takes 11 minutes with Pandas. Instead, we can read 1 file from my [Kaggle dataset here][1] which contains all the 11k spectrograms in less than 1 minute! To use my Kaggle dataset, set variable `READ_SPEC_FILES = False`. Thank you for upvoting my helpful [dataset][1] :-)
 # 
-# The resulting `all_spectograms` dictionary contains `spectogram_id` as keys (`int` keys) and the values are the spectogram sequences (as 2-dimensional `np.array`) of shape `(timesteps, 400)`.
+# The resulting `all_spectrograms` dictionary contains `spectrogram_id` as keys (`int` keys) and the values are the spectrogram sequences (as 2-dimensional `np.array`) of shape `(timesteps, 400)`.
 # 
-# Each spectogram is a parquet file. This parquet, when converted to a pandas dataframe, results in a dataframe of shape `(time_steps, 401)`. First column is the `time` column and the remaining 400 columns are the recordings. There are 400 columns because there are, respectively, 100 rows associated to the 4 recording regions of the EEG electrodes: `LL`, `RL`, `LP`, `RP`. Column names also include the frequency in heartz.
+# Each spectrogram is a parquet file. This parquet, when converted to a pandas dataframe, results in a dataframe of shape `(time_steps, 401)`. First column is the `time` column and the remaining 400 columns are the recordings. There are 400 columns because there are, respectively, 100 rows associated to the 4 recording regions of the EEG electrodes: `LL`, `RL`, `LP`, `RP`. Column names also include the frequency in heartz.
 # 
 # [1]: https://www.kaggle.com/datasets/cdeotte/brain-spectrograms
 
 # %%
 READ_SPEC_FILES = True
 
-paths_spectograms = glob(paths.TRAIN_SPECTOGRAMS + "*.parquet")
-print(f'There are {len(paths_spectograms)} spectrogram parquets')
+paths_spectrograms = glob(paths.TRAIN_SPECTROGRAMS + "*.parquet")
+print(f'There are {len(paths_spectrograms)} spectrogram parquets')
 
 def load_spectrogram(file_path):
     """
@@ -372,17 +350,17 @@ if READ_SPEC_FILES:
     all_spectrograms = {}
     with ProcessPoolExecutor() as executor:
         # Using map to ensure the order of results matches the order of submission
-        results = executor.map(load_spectrogram, paths_spectograms)
+        results = executor.map(load_spectrogram, paths_spectrograms)
         
         # Populate the all_spectrograms dictionary with results in order
         for name, spectrogram in results:
             all_spectrograms[name] = spectrogram
 else:
-    all_spectrograms = np.load(paths.PRE_LOADED_SPECTOGRAMS, allow_pickle=True).item()
+    all_spectrograms = np.load(paths.PRE_LOADED_SPECTROGRAMS, allow_pickle=True).item()
     
 if config.VISUALIZE:
-    idx = np.random.randint(0,len(paths_spectograms))
-    spectrogram_path = paths_spectograms[idx]
+    idx = np.random.randint(0,len(paths_spectrograms))
+    spectrogram_path = paths_spectrograms[idx]
     plot_spectrogram(spectrogram_path)
 
 # %% [markdown]
@@ -393,20 +371,19 @@ if config.VISUALIZE:
 # 
 
 # %%
-# %%time
-# READ_EEG_SPEC_FILES = False
+READ_EEG_SPEC_FILES = False
 
-# paths_eegs = glob(paths.TRAIN_EEGS + "*.npy")
-# print(f'There are {len(paths_eegs)} EEG spectograms')
-
-# if READ_EEG_SPEC_FILES:
-#     all_eegs = {}
-#     for file_path in tqdm(paths_eegs):
-#         eeg_id = file_path.split("/")[-1].split(".")[0]
-#         eeg_spectogram = np.load(file_path)
-#         all_eegs[eeg_id] = eeg_spectogram
-# else:
-#     all_eegs = np.load(paths.PRE_LOADED_EEGS, allow_pickle=True).item()
+if READ_EEG_SPEC_FILES:
+    paths_eegs = glob(paths.TRAIN_EEGS + "*.npy")
+    print(f'There are {len(paths_eegs)} EEG spectrograms')
+    all_eegs = {}
+    for file_path in tqdm(paths_eegs):
+        eeg_id = file_path.split("/")[-1].split(".")[0]
+        eeg_spectrogram = np.load(file_path)
+        all_eegs[eeg_id] = eeg_spectrogram
+else:
+    custom_specs = np.load(paths.DATAPATH + 'custom_specs.npy', mmap_mode='r')
+    phases = np.load(paths.DATAPATH + 'phase_spectrums.npy', mmap_mode='r')
 
 # %% [markdown]
 # # <b><span style='color:#F1A424'>|</span> Validation</b><a class='anchor' id='validation'></a> [↑](#top) 
@@ -453,7 +430,7 @@ class CustomDataset(Dataset):
         self.augment = augment
         self.mode = mode
         self.kaggle_specs = all_spectrograms
-        self.eeg_spectograms = eeg_specs
+        self.eeg_spectrograms = eeg_specs
         
     def __len__(self):
         """
@@ -479,19 +456,17 @@ class CustomDataset(Dataset):
         y = np.zeros(6, dtype='float32')
         img = np.ones((128,256), dtype='float32')
         row = self.df.iloc[index]
-        major = row['index'] // 100
-        minor = row['index'] % 100
-        # if self.mode=='test': 
-        #     r = 0
-        # else: 
-        #     r = int((row['min'] + row['max']) // 4)
-        start = int((row['spectrogram_label_offset_seconds']) // 2)
-        end = start + 300
+        row_idx = eeg_hash[row['eeg_id']]
+        if self.mode=='test': 
+            r = 0
+        else: 
+            r = int((row['min'] + row['max']) // 4)
+
             
         for region in range(4):
-            img = self.kaggle_specs[row['spectrogram_id']][start:end, region*100:(region+1)*100].T #(f, t)
+            img = self.kaggle_specs[row['spectrogram_id']][r:r+300, region*100:(region+1)*100].T #(f, t)
             
-            # Log transform spectogram
+            # Log transform spectrogram
             img = np.clip(img, np.exp(-4), np.exp(8))
             img = np.log(img)
 
@@ -506,12 +481,11 @@ class CustomDataset(Dataset):
             if self.mode != 'test':
                 y = row[label_cols].values.astype(np.float32)
         
-        cust_spec = np.load(paths.DATAPATH + 'custom_specs/spec_{:04}.npy'.format(major+1), 'r')[minor]
+        cust_spec = custom_specs[row_idx]
         cust_spec = np.moveaxis(cust_spec, 0, -1)
         X[:, :, 4:8] = cust_spec
 
-        phase = np.load(paths.DATAPATH + 'phase_spectrum/phase_{:04}.npy'.format(major+1), 'r')[minor].T
-        phase = cv2.resize(phase, (256,128))
+        phase = phases[row_idx].T
         X[:, :, 8:] = phase
 
 
@@ -594,6 +568,7 @@ class CustomModel(nn.Module):
             pretrained=pretrained,
             drop_rate = 0.1,
             drop_path_rate = 0.2,
+            in_chans = 1
         )
         if config.FREEZE:
             for i,(name, param) in enumerate(list(self.model.named_parameters())\
@@ -611,29 +586,27 @@ class CustomModel(nn.Module):
         """
         Reshapes input (128, 256, 8) -> (512, 512, 3) monotone image.
         """ 
-        # === Get spectograms ===
-        spectograms = [x[:, :, :, i:i+1] for i in range(4)]
-        spectograms = torch.cat(spectograms, dim=1)
+        # === Get spectrograms ===
+        spectrograms = [x[:, :, :, i:i+1] for i in range(4)]
+        spectrograms = torch.cat(spectrograms, dim=1)
         
-        # === Get EEG spectograms ===
+        # === Get EEG spectrograms ===
         eegs = [x[:, :, :, i:i+1] for i in range(4,8)]
         eegs = torch.cat(eegs, dim=1)
 
-        # === Get phase spectograms ===
+        # === Get phase spectrograms ===
         phases = [x[:, :, :, i:i+1] for i in range(8,12)]
         phases = torch.cat(phases, dim=1)
         
         # === Reshape (512,512,3) ===
         if self.USE_KAGGLE_SPECTROGRAMS & self.USE_EEG_SPECTROGRAMS & self.USE_PHASES:
-            x = torch.cat([spectograms, eegs, phases], dim=2)
+            x = torch.cat([spectrograms, eegs, phases], dim=2)
         elif self.USE_KAGGLE_SPECTROGRAMS & self.USE_EEG_SPECTROGRAMS:
-            x = torch.cat([spectograms, eegs], dim=2)
+            x = torch.cat([spectrograms, eegs], dim=2)
         elif self.USE_EEG_SPECTROGRAMS:
             x = eegs
         else:
-            x = spectograms
-            
-        x = torch.cat([x,x,x], dim=3)
+            x = spectrograms
         x = x.permute(0, 3, 1, 2)
         return x
     
@@ -878,7 +851,7 @@ def train_loop(df, fold):
         elapsed = time.time() - start_time
 
         LOGGER.info(f'Epoch {epoch+1} - avg_train_loss: {avg_train_loss:.4f}  avg_val_loss: {avg_val_loss:.4f}  time: {elapsed:.0f}s')
-        writer.add_scalars(f'Fold {fold} - train & eval loss', {'Training loss': avg_train_loss, 'Eval loss': avg_val_loss}, epoch+1)
+        writer.add_scalars(f'Epoch {epoch+1} - train & eval loss', {'Training loss': avg_train_loss, 'Eval loss': avg_val_loss}, epoch+1)
         writer.flush()
         
         if avg_val_loss < best_loss:
