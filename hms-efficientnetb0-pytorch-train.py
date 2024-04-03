@@ -124,7 +124,7 @@ class config_base:
     SEED = int.from_bytes(os.urandom(4), byteorder='big', signed=False)
     TRAIN_FULL_DATA = False
     K_FOLD_EXISTS = False
-    WEIGHT_DECAY = 0.01
+    WEIGHT_DECAY = 0.05
 
 
 class config_debug(config_base):
@@ -566,7 +566,7 @@ class CustomModel(nn.Module):
         self.model = timm.create_model(
             config.MODEL,
             pretrained=pretrained,
-            drop_rate = 0.1,
+            drop_rate = 0.2,
             drop_path_rate = 0.2,
             in_chans = 1
         )
@@ -851,7 +851,7 @@ def train_loop(df, fold):
         elapsed = time.time() - start_time
 
         LOGGER.info(f'Epoch {epoch+1} - avg_train_loss: {avg_train_loss:.4f}  avg_val_loss: {avg_val_loss:.4f}  time: {elapsed:.0f}s')
-        writer.add_scalars(f'Epoch {epoch+1} - train & eval loss', {'Training loss': avg_train_loss, 'Eval loss': avg_val_loss}, epoch+1)
+        writer.add_scalars(f'Fold {fold} - train & eval loss', {'Training loss': avg_train_loss, 'Eval loss': avg_val_loss}, epoch+1)
         writer.flush()
         
         if avg_val_loss < best_loss:
