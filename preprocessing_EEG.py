@@ -18,7 +18,7 @@ if not os.path.exists(SAVE_DIR):
 ## set these params if need to resume preprocessing
 # calculate by mult last saved npy chunk_num by 100, then subtract 100
 # ie. eeg_filt_0087.npy => 87 * 100 = 8700 - 100 => start at 8600
-START_IND = 0
+START_IND = 47400
 
 def read_metadata():
     """
