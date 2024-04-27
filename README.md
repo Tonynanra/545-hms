@@ -4,3 +4,4 @@ This repository contains the code for our EECS 545 final project on [HMS - Harmf
 
 WaveNet Code is based on: [A Kaggle Submission](https://www.kaggle.com/code/alejopaullier/hms-wavenet-pytorch-train)
 
+EfficientNet code adopted from [here](https://www.kaggle.com/code/alejopaullier/hms-efficientnetb0-pytorch-train)
